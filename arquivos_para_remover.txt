@@ -1,0 +1,51 @@
+# Arquivos a serem removidos (relacionados à interface visual)
+
+# Activities
+app/src/main/java/com/example/uhf/activity/BaseTabFragmentActivity.java
+app/src/main/java/com/example/uhf/activity/TestActivity.java
+app/src/main/java/com/example/uhf/activity/UHFMainActivity.java
+
+# Adapters
+app/src/main/java/com/example/uhf/adapter/ViewPagerAdapter.java
+
+# File Browser (usado apenas na interface visual)
+app/src/main/java/com/example/uhf/filebrowser/FileManagerActivity.java
+app/src/main/java/com/example/uhf/filebrowser/IResultData.java
+app/src/main/java/com/example/uhf/filebrowser/IconifiedText.java
+app/src/main/java/com/example/uhf/filebrowser/IconifiedTextListAdapter.java
+app/src/main/java/com/example/uhf/filebrowser/IconifiedTextView.java
+
+# Fragments (todos relacionados à interface)
+app/src/main/java/com/example/uhf/fragment/BlockPermalockFragment.java
+app/src/main/java/com/example/uhf/fragment/BlockWriteFragment.java
+app/src/main/java/com/example/uhf/fragment/KeyDwonFragment.java
+app/src/main/java/com/example/uhf/fragment/UHFKillFragment.java
+app/src/main/java/com/example/uhf/fragment/UHFLightFragment.java
+app/src/main/java/com/example/uhf/fragment/UHFLocationFragment.java
+app/src/main/java/com/example/uhf/fragment/UHFLockFragment.java
+app/src/main/java/com/example/uhf/fragment/UHFRadarLocationFragment.java
+app/src/main/java/com/example/uhf/fragment/UHFReadTagFragment.java
+app/src/main/java/com/example/uhf/fragment/UHFReadWriteFragment.java
+app/src/main/java/com/example/uhf/fragment/UHFSetFragment.java
+app/src/main/java/com/example/uhf/fragment/UHFUpgradeFragment.java
+
+# Views personalizadas (relacionadas à interface)
+app/src/main/java/com/example/uhf/view/CircleSeekBar.java
+app/src/main/java/com/example/uhf/view/RadarBackgroundView.java
+app/src/main/java/com/example/uhf/view/RadarPanelView.java
+app/src/main/java/com/example/uhf/view/RadarView.java
+app/src/main/java/com/example/uhf/view/UhfLocationCanvasView.java
+
+# Widgets personalizados (relacionados à interface)
+app/src/main/java/com/example/uhf/widget/LazyViewPager.java
+app/src/main/java/com/example/uhf/widget/NoScrollViewPager.java
+
+# Layouts e recursos visuais
+app/src/main/res/layout/*
+app/src/main/res/menu/*
+
+# Manter apenas:
+# - RFIDServiceActivity
+# - RFIDService
+# - RFIDServiceHelper
+# - Algumas classes de utilidades que podem ser necessárias
