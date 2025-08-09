@@ -63,19 +63,42 @@ public class RFIDServiceActivity extends Activity {
     private void iniciarServicoRFID() {
         try {
             Intent serviceIntent = new Intent(this, RFIDService.class);
-            serviceIntent.setAction(RFIDService.ACTION_START_SERVICE);
             
-            // Em Android 8.0 (API 26) ou superior, é necessário usar startForegroundService
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent);
+            // Verifica a intent que iniciou a atividade para determinar o modo
+            Intent startIntent = getIntent();
+            String action = startIntent != null ? startIntent.getAction() : null;
+            
+            // Define a ação com base na intent recebida
+            if (RFIDService.ACTION_START_BATCH_SERVICE.equals(action)) {
+                serviceIntent.setAction(RFIDService.ACTION_START_BATCH_SERVICE);
+                
+                // Em Android 8.0 (API 26) ou superior, é necessário usar startForegroundService
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    startForegroundService(serviceIntent);
+                } else {
+                    startService(serviceIntent);
+                }
+                
+                // Exibe uma mensagem rápida para o usuário indicando modo batch
+                Toast.makeText(this, "Serviço de leitura RFID iniciado (Modo Batch)", Toast.LENGTH_SHORT).show();
+                
+                Log.d(TAG, "Comando para iniciar serviço RFID em modo batch enviado com sucesso");
             } else {
-                startService(serviceIntent);
+                // Modo tradicional (padrão)
+                serviceIntent.setAction(RFIDService.ACTION_START_SERVICE);
+                
+                // Em Android 8.0 (API 26) ou superior, é necessário usar startForegroundService
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    startForegroundService(serviceIntent);
+                } else {
+                    startService(serviceIntent);
+                }
+                
+                // Exibe uma mensagem rápida para o usuário
+                Toast.makeText(this, "Serviço de leitura RFID iniciado", Toast.LENGTH_SHORT).show();
+                
+                Log.d(TAG, "Comando para iniciar serviço RFID enviado com sucesso");
             }
-            
-            // Exibe uma mensagem rápida para o usuário
-            Toast.makeText(this, "Serviço de leitura RFID iniciado", Toast.LENGTH_SHORT).show();
-            
-            Log.d(TAG, "Comando para iniciar serviço RFID enviado com sucesso");
         } catch (Exception e) {
             Log.e(TAG, "Erro ao iniciar serviço RFID: " + e.getMessage());
             Toast.makeText(this, "Erro ao iniciar o serviço RFID", Toast.LENGTH_LONG).show();

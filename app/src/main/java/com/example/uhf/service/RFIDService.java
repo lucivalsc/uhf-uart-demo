@@ -443,7 +443,7 @@ public class RFIDService extends Service {
      * Inicia o monitoramento de heartbeat do cliente
      */
     private void startHeartbeatMonitoring() {
-        lastHeartbeat = System.currentTimeMillis();
+        lastHeartbeat = System.currentTimeMillis(); // ✅ INICIALIZA CORRETAMENTE
         
         if (heartbeatTimer != null) {
             heartbeatTimer.cancel();
@@ -457,7 +457,7 @@ public class RFIDService extends Service {
             }
         }, HEARTBEAT_TIMEOUT, HEARTBEAT_TIMEOUT / 2);
         
-        Log.d(TAG, "Monitoramento de heartbeat iniciado");
+        Log.d(TAG, "Monitoramento de heartbeat iniciado - timeout: " + HEARTBEAT_TIMEOUT + "ms");
     }
     
     /**
@@ -465,19 +465,53 @@ public class RFIDService extends Service {
      */
     private void updateHeartbeat() {
         lastHeartbeat = System.currentTimeMillis();
-        Log.d(TAG, "Heartbeat do cliente atualizado");
+        Log.d(TAG, "Heartbeat do cliente atualizado - próximo timeout em: " + HEARTBEAT_TIMEOUT + "ms");
     }
     
     /**
      * Verifica se o cliente ainda está vivo baseado no heartbeat
+     * ✅ CORRIGIDO: Adiciona verificações de segurança para evitar crash
      */
     private void checkClientAlive() {
-        long currentTime = System.currentTimeMillis();
-        if (currentTime - lastHeartbeat > HEARTBEAT_TIMEOUT) {
-            Log.w(TAG, "Cliente não responde - parando serviço");
-            stopInventory();
-            stopBatchMode();
-            stopSelf();
+        try {
+            long currentTime = System.currentTimeMillis();
+            long timeSinceLastHeartbeat = currentTime - lastHeartbeat;
+            
+            Log.d(TAG, "Verificando heartbeat - tempo desde último: " + timeSinceLastHeartbeat + "ms");
+            
+            if (timeSinceLastHeartbeat > HEARTBEAT_TIMEOUT) {
+                Log.w(TAG, "Cliente não responde há " + timeSinceLastHeartbeat + "ms - iniciando parada segura");
+                
+                // ✅ PARADA SEGURA: Para inventário primeiro, depois envia dados, depois mata serviço
+                stopInventory();
+                
+                // ✅ Envia dados acumulados antes de parar (evita perda de dados)
+                if (isBatchMode) {
+                    Log.i(TAG, "Enviando dados batch antes de parar por timeout");
+                    sendBatchData();
+                    
+                    // ✅ Aguarda um pouco para o broadcast ser processado
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                
+                stopBatchMode();
+                
+                // ✅ Para o serviço com delay para evitar crash
+                new Timer().schedule(new TimerTask() {
+                    @Override
+                    public void run() {
+                        Log.i(TAG, "Parando serviço após timeout de heartbeat");
+                        stopSelf();
+                    }
+                }, 500); // 500ms de delay
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Erro ao verificar heartbeat do cliente", e);
+            // ✅ Em caso de erro, não mata o serviço abruptamente
         }
     }
     
