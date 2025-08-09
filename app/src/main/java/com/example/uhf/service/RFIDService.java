@@ -20,8 +20,12 @@ import com.rscja.deviceapi.entity.InventoryParameter;
 import com.rscja.deviceapi.entity.UHFTAGInfo;
 import com.rscja.deviceapi.interfaces.IUHFInventoryCallback;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Timer;
+import java.util.TimerTask;
 
 /**
  * Serviço para leitura contínua de tags RFID e envio via Broadcast Intent
@@ -37,10 +41,21 @@ public class RFIDService extends Service {
     private static final long MIN_BROADCAST_INTERVAL = 100; // Intervalo mínimo entre broadcasts em milissegundos
 
     public static final String ACTION_START_SERVICE = "com.rfid.START_SERVICE";
+    public static final String ACTION_START_BATCH_SERVICE = "com.rfid.START_BATCH_SERVICE";
     public static final String ACTION_STOP_SERVICE = "com.rfid.STOP_SERVICE";
+    public static final String ACTION_GET_BATCH_DATA = "com.rfid.GET_BATCH_DATA";
+    public static final String ACTION_CLIENT_HEARTBEAT = "com.rfid.CLIENT_HEARTBEAT";
+    
     public static final String ACTION_EPC_READED = "com.rfid.EPC_READED";
+    public static final String ACTION_BATCH_COUNT_UPDATE = "com.rfid.BATCH_COUNT_UPDATE";
+    public static final String ACTION_BATCH_DATA_RESPONSE = "com.rfid.BATCH_DATA_RESPONSE";
+    
     public static final String EXTRA_EPC = "epc";
     public static final String EXTRA_RSSI = "rssi";   // Força do sinal (opcional)
+    public static final String EXTRA_COUNT = "count"; // Contagem de itens no modo batch
+    public static final String EXTRA_EPC_LIST = "epc_list"; // Lista de EPCs no modo batch
+    public static final String EXTRA_RSSI_LIST = "rssi_list"; // Lista de RSSIs no modo batch
+    public static final String EXTRA_OPERATION_MODE = "operation_mode"; // Modo de operação
 
     private RFIDWithUHFUART mReader;
     private boolean isReading = false;
@@ -48,6 +63,16 @@ public class RFIDService extends Service {
     
     // Cache para controle de leituras repetidas
     private final Map<String, Long> epcLastReadMap = new HashMap<>();
+    
+    // Variáveis para modo batch
+    private boolean isBatchMode = false;
+    private final List<String> batchEpcList = new ArrayList<>();
+    private final List<String> batchRssiList = new ArrayList<>();
+    private Timer countUpdateTimer;
+    private Timer heartbeatTimer;
+    private long lastHeartbeat = 0;
+    private static final long HEARTBEAT_TIMEOUT = 30000; // 30 segundos
+    private static final long COUNT_UPDATE_INTERVAL = 10000; // 10 segundos
 
     @Override
     public void onCreate() {
@@ -63,11 +88,24 @@ public class RFIDService extends Service {
         if (intent != null) {
             String action = intent.getAction();
             if (ACTION_START_SERVICE.equals(action)) {
+                isBatchMode = false;
                 startForegroundService();
                 startInventory();
+            } else if (ACTION_START_BATCH_SERVICE.equals(action)) {
+                isBatchMode = true;
+                startForegroundService();
+                startBatchInventory();
             } else if (ACTION_STOP_SERVICE.equals(action)) {
                 stopInventory();
+                stopBatchMode();
                 stopSelf();
+            } else if (ACTION_GET_BATCH_DATA.equals(action)) {
+                sendBatchData();
+                stopInventory();
+                stopBatchMode();
+                stopSelf();
+            } else if (ACTION_CLIENT_HEARTBEAT.equals(action)) {
+                updateHeartbeat();
             }
         }
         
@@ -83,6 +121,7 @@ public class RFIDService extends Service {
     @Override
     public void onDestroy() {
         stopInventory();
+        stopBatchMode();
         releaseUHFReader();
         Log.d(TAG, "Serviço RFID destruído");
         super.onDestroy();
@@ -121,6 +160,13 @@ public class RFIDService extends Service {
      * com notificação visível na barra de status
      */
     private void startForegroundService() {
+        updateForegroundNotification();
+    }
+    
+    /**
+     * Atualiza a notificação do foreground service baseada no modo atual
+     */
+    private void updateForegroundNotification() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             // Cria um canal de notificação com prioridade média para garantir visibilidade
             NotificationChannel channel = new NotificationChannel(
@@ -165,12 +211,24 @@ public class RFIDService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
         );
 
+        // Define textos baseados no modo de operação
+        String title, text, bigText;
+        if (isBatchMode) {
+            title = "Leitor RFID Ativo (Modo Batch)";
+            text = "Acumulando dados - Enviará quando solicitado";
+            bigText = "O serviço RFID está no modo BATCH. Os dados estão sendo acumulados e serão enviados apenas quando solicitados. Toque em 'Parar Serviço RFID' para encerrar.";
+        } else {
+            title = "Leitor RFID Ativo (Modo Normal)";
+            text = "Enviando dados imediatamente";
+            bigText = "O serviço RFID está no modo NORMAL. Os dados são enviados imediatamente quando lidos. Toque em 'Parar Serviço RFID' para encerrar.";
+        }
+        
         // Constrói a notificação com ação para parar o serviço
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-                .setContentTitle("Leitor RFID Ativo")
-                .setContentText("Serviço de leitura RFID em execução")
+                .setContentTitle(title)
+                .setContentText(text)
                 .setStyle(new NotificationCompat.BigTextStyle() // Estilo expandido para mais informações
-                        .bigText("O serviço de leitura RFID está em execução. Toque em 'Parar Serviço RFID' para encerrar."))
+                        .bigText(bigText))
                 .setSmallIcon(R.drawable.ic_launcher)
                 .setPriority(NotificationCompat.PRIORITY_HIGH) // Prioridade alta para maior visibilidade
                 .setOngoing(true) // Impede que o usuário deslize para remover
@@ -184,16 +242,17 @@ public class RFIDService extends Service {
         startForeground(NOTIFICATION_ID, builder.build());
         
         // Log para depuração
-        Log.d(TAG, "Serviço RFID iniciado em foreground com notificação visível");
+        String modeText = isBatchMode ? "modo batch" : "modo normal";
+        Log.d(TAG, "Serviço RFID iniciado em foreground com notificação visível (" + modeText + ")");
     }
 
     /**
-     * Inicia a leitura contínua de tags RFID
+     * Inicia a leitura contínua de tags RFID (modo normal)
      */
     private void startInventory() {
         if (mReader != null && !isReading) {
             isReading = true;
-            Log.d(TAG, "Iniciando leitura de tags RFID");
+            Log.d(TAG, "Iniciando leitura de tags RFID (modo normal)");
 
             // Limpa o cache de leituras ao iniciar novo ciclo
             epcLastReadMap.clear();
@@ -221,10 +280,59 @@ public class RFIDService extends Service {
             
             // Inicia o inventário contínuo
             if (mReader.startInventoryTag(inventoryParameter)) {
-                Log.d(TAG, "Inventário RFID iniciado com sucesso");
+                Log.d(TAG, "Inventário RFID iniciado com sucesso (modo normal)");
             } else {
                 Log.e(TAG, "Falha ao iniciar inventário RFID");
                 isReading = false;
+            }
+        }
+    }
+
+    /**
+     * Inicia a leitura contínua de tags RFID (modo batch)
+     */
+    private void startBatchInventory() {
+        if (mReader != null && !isReading) {
+            isReading = true;
+            Log.d(TAG, "Iniciando leitura de tags RFID (modo batch)");
+
+            // Limpa os dados do modo batch
+            synchronized (batchEpcList) {
+                batchEpcList.clear();
+                batchRssiList.clear();
+            }
+            epcLastReadMap.clear();
+            
+            // Inicia o heartbeat e timer de contagem
+            startHeartbeatMonitoring();
+            startCountUpdateTimer();
+            
+            // Define o callback para receber as tags lidas
+            mReader.setInventoryCallback(new IUHFInventoryCallback() {
+                @Override
+                public void callback(UHFTAGInfo info) {
+                    if (info != null && info.getEPC() != null && !info.getEPC().isEmpty()) {
+                        String rssi = null;
+                        try {
+                            rssi = info.getRssi();
+                        } catch (Exception e) {
+                            // Alguns dispositivos podem não suportar RSSI
+                        }
+                        addToBatchList(info.getEPC(), rssi);
+                    }
+                }
+            });
+
+            // Configura parâmetros de inventário para otimização
+            InventoryParameter inventoryParameter = new InventoryParameter();
+            
+            // Inicia o inventário contínuo
+            if (mReader.startInventoryTag(inventoryParameter)) {
+                Log.d(TAG, "Inventário RFID iniciado com sucesso (modo batch)");
+            } else {
+                Log.e(TAG, "Falha ao iniciar inventário RFID (modo batch)");
+                isReading = false;
+                stopBatchMode();
             }
         }
     }
@@ -281,5 +389,217 @@ public class RFIDService extends Service {
      */
     private void sendEPCBroadcast(String epc) {
         sendEPCBroadcast(epc, null);
+    }
+    
+    /**
+     * Adiciona EPC à lista do modo batch com controle de duplicação
+     */
+    private void addToBatchList(String epc, String rssi) {
+        if (epc == null || epc.isEmpty()) {
+            return;
+        }
+        
+        long currentTime = System.currentTimeMillis();
+        
+        // Verifica se o EPC já foi lido recentemente para evitar duplicações
+        Long lastReadTime = epcLastReadMap.get(epc);
+        if (lastReadTime != null && (currentTime - lastReadTime) < MIN_BROADCAST_INTERVAL) {
+            // Ignora leituras muito próximas do mesmo EPC
+            return;
+        }
+        
+        // Atualiza o cache com o tempo da última leitura
+        epcLastReadMap.put(epc, currentTime);
+        
+        // Adiciona à lista batch de forma sincronizada
+        synchronized (batchEpcList) {
+            batchEpcList.add(epc);
+            batchRssiList.add(rssi != null ? rssi : "");
+        }
+        
+        Log.d(TAG, "EPC adicionado ao batch: " + epc + (rssi != null ? " (RSSI: " + rssi + ")" : ""));
+    }
+    
+    /**
+     * Inicia o timer para envio periódico da contagem de itens
+     */
+    private void startCountUpdateTimer() {
+        if (countUpdateTimer != null) {
+            countUpdateTimer.cancel();
+        }
+        
+        countUpdateTimer = new Timer("CountUpdateTimer");
+        countUpdateTimer.scheduleAtFixedRate(new TimerTask() {
+            @Override
+            public void run() {
+                sendCountUpdate();
+            }
+        }, COUNT_UPDATE_INTERVAL, COUNT_UPDATE_INTERVAL);
+        
+        Log.d(TAG, "Timer de atualização de contagem iniciado");
+    }
+    
+    /**
+     * Inicia o monitoramento de heartbeat do cliente
+     */
+    private void startHeartbeatMonitoring() {
+        lastHeartbeat = System.currentTimeMillis();
+        
+        if (heartbeatTimer != null) {
+            heartbeatTimer.cancel();
+        }
+        
+        heartbeatTimer = new Timer("HeartbeatTimer");
+        heartbeatTimer.scheduleAtFixedRate(new TimerTask() {
+            @Override
+            public void run() {
+                checkClientAlive();
+            }
+        }, HEARTBEAT_TIMEOUT, HEARTBEAT_TIMEOUT / 2);
+        
+        Log.d(TAG, "Monitoramento de heartbeat iniciado");
+    }
+    
+    /**
+     * Atualiza o timestamp do último heartbeat recebido
+     */
+    private void updateHeartbeat() {
+        lastHeartbeat = System.currentTimeMillis();
+        Log.d(TAG, "Heartbeat do cliente atualizado");
+    }
+    
+    /**
+     * Verifica se o cliente ainda está vivo baseado no heartbeat
+     */
+    private void checkClientAlive() {
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - lastHeartbeat > HEARTBEAT_TIMEOUT) {
+            Log.w(TAG, "Cliente não responde - parando serviço");
+            stopInventory();
+            stopBatchMode();
+            stopSelf();
+        }
+    }
+    
+    /**
+     * Envia atualização da contagem de itens lidos
+     */
+    private void sendCountUpdate() {
+        int count;
+        synchronized (batchEpcList) {
+            count = batchEpcList.size();
+        }
+        
+        Intent intent = new Intent(ACTION_BATCH_COUNT_UPDATE);
+        intent.putExtra(EXTRA_COUNT, count);
+        sendBroadcast(intent);
+        
+        // Atualiza a notificação com a contagem atual no modo batch
+        if (isBatchMode) {
+            updateNotificationWithCount(count);
+        }
+        
+        Log.d(TAG, "Atualização de contagem enviada: " + count + " itens");
+    }
+    
+    /**
+     * Atualiza a notificação com a contagem atual de itens no modo batch
+     */
+    private void updateNotificationWithCount(int count) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(
+                    NOTIFICATION_CHANNEL_ID,
+                    "Serviço RFID",
+                    NotificationManager.IMPORTANCE_DEFAULT);
+            channel.setDescription("Canal para notificação do serviço RFID");
+            channel.enableLights(true);
+            channel.setLightColor(android.graphics.Color.BLUE);
+            channel.enableVibration(false);
+            channel.setShowBadge(true);
+            channel.setSound(null, null);
+            
+            NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            manager.createNotificationChannel(channel);
+        }
+
+        Intent stopIntent = new Intent(this, RFIDService.class);
+        stopIntent.setAction(ACTION_STOP_SERVICE);
+        PendingIntent pendingStopIntent = PendingIntent.getService(
+                this,
+                0,
+                stopIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
+        );
+
+        NotificationCompat.Action stopAction = new NotificationCompat.Action.Builder(
+                android.R.drawable.ic_delete,
+                "Parar Serviço RFID",
+                pendingStopIntent
+        ).build();
+
+        String title = "Leitor RFID Ativo (Modo Batch)";
+        String text = "Acumulados: " + count + " itens - Enviará quando solicitado";
+        String bigText = "O serviço RFID está no modo BATCH. " + count + " itens foram acumulados e serão enviados quando solicitados. Toque em 'Parar Serviço RFID' para encerrar.";
+        
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(new NotificationCompat.BigTextStyle()
+                        .bigText(bigText))
+                .setSmallIcon(R.drawable.ic_launcher)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setOngoing(true)
+                .setUsesChronometer(true)
+                .addAction(stopAction)
+                .setContentIntent(pendingStopIntent)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setShowWhen(true);
+
+        NotificationManager notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        notificationManager.notify(NOTIFICATION_ID, builder.build());
+    }
+    
+    /**
+     * Envia todos os dados acumulados no modo batch
+     */
+    private void sendBatchData() {
+        String[] epcArray;
+        String[] rssiArray;
+        
+        synchronized (batchEpcList) {
+            epcArray = batchEpcList.toArray(new String[0]);
+            rssiArray = batchRssiList.toArray(new String[0]);
+        }
+        
+        Intent intent = new Intent(ACTION_BATCH_DATA_RESPONSE);
+        intent.putExtra(EXTRA_EPC_LIST, epcArray);
+        intent.putExtra(EXTRA_RSSI_LIST, rssiArray);
+        intent.putExtra(EXTRA_COUNT, epcArray.length);
+        sendBroadcast(intent);
+        
+        Log.d(TAG, "Dados do batch enviados: " + epcArray.length + " itens");
+    }
+    
+    /**
+     * Para o modo batch e limpa recursos
+     */
+    private void stopBatchMode() {
+        if (countUpdateTimer != null) {
+            countUpdateTimer.cancel();
+            countUpdateTimer = null;
+        }
+        
+        if (heartbeatTimer != null) {
+            heartbeatTimer.cancel();
+            heartbeatTimer = null;
+        }
+        
+        synchronized (batchEpcList) {
+            batchEpcList.clear();
+            batchRssiList.clear();
+        }
+        
+        isBatchMode = false;
+        Log.d(TAG, "Modo batch parado e recursos limpos");
     }
 }
